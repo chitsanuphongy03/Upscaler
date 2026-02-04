@@ -1,0 +1,32 @@
+[
+  {
+    "id": "9cc2ae4a-31f7-4dac-bef1-64fade195862",
+    "input_path": "uploads\\772dbf68-31ae-43d3-bc58-77b2dd89fe6c.png",
+    "original_filename": "Gemini_Generated_Image_lfdnrtlfdnrtlfdn.png",
+    "scale": 2,
+    "target_resolution": 1440,
+    "upscale_method": "Real-ESRGAN",
+    "status": "completed",
+    "created_at": "2026-02-04T10:25:22.894670",
+    "started_at": "2026-02-04T10:25:23.086920",
+    "completed_at": "2026-02-04T10:25:28.264208",
+    "output_path": "outputs\\upscaled_2x_772dbf68-31ae-43d3-bc58-77b2dd89fe6c.png",
+    "error": null,
+    "progress": 0.0
+  },
+  {
+    "id": "cb1c93a8-97b4-4763-8c03-b3d428c988b2",
+    "input_path": "uploads\\fc63e136-b314-40c4-9e6a-18ec93d8f130.mp4",
+    "original_filename": "motion2Fast_Anime_lofi_illustration_cozy_night_study_sceneCame_0.mp4",
+    "scale": 2,
+    "target_resolution": 1440,
+    "upscale_method": "Real-ESRGAN",
+    "status": "completed",
+    "created_at": "2026-02-04T10:26:50.117350",
+    "started_at": "2026-02-04T10:26:50.122421",
+    "completed_at": "2026-02-04T10:39:59.218763",
+    "output_path": "outputs\\fc63e136-b314-40c4-9e6a-18ec93d8f130_upscaled_2x.mp4",
+    "error": null,
+    "progress": 0.0
+  }
+]

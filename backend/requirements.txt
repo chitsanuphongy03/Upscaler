@@ -1,0 +1,11 @@
+fastapi==0.109.0
+uvicorn==0.27.0
+python-multipart==0.0.6
+aiofiles==23.2.1
+opencv-python-headless==4.9.0.80
+numpy==1.26.3
+realesrgan==0.3.0
+torch>=2.0.0
+torchvision>=0.15.0
+basicsr>=1.4.2
+websockets>=12.0
