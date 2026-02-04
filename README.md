@@ -41,8 +41,8 @@ A modern, web-based application for upscaling videos and images using AI (Real-E
 1. **Clone the repository**
 
    ```bash
-   git clone https://github.com/yourusername/video-upscaler.git
-   cd video-upscaler
+   https://github.com/chitsanuphongy03/Upscaler.git
+   cd Upscaler
    ```
 
 2. **Backend Setup**
