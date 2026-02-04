@@ -106,7 +106,3 @@ A modern, web-based application for upscaling videos and images using AI (Real-E
 This project is open source.
 
 ---
-
-<p align="center">
-  Made with ❤️ by [Your Name]
-</p>
