@@ -1,6 +1,4 @@
-# ⚡ AI Video Upscaler
-
-![Project Banner](public/app-logo.png)
+# ⚡Upscaler
 
 A modern, web-based application for upscaling videos and images using AI (Real-ESRGAN). Built with React, TypeScript, Tailwind CSS, and FastAPI.
 
