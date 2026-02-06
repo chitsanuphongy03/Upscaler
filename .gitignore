@@ -34,3 +34,10 @@ yarn-error.log*
 .vscode/
 .idea/
 .DS_Store
+
+# PyInstaller
+backend/build/
+backend/dist/
+
+# Runtime data
+backend/jobs.json

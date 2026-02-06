@@ -1,17 +1,14 @@
-"""
-Queue Manager - Job queue management for upscaling tasks
-"""
+"""Job queue for upscaling tasks."""
 
 import asyncio
 import json
+from collections import deque
 from dataclasses import dataclass
 from datetime import datetime
 from enum import Enum
 from pathlib import Path
 from typing import Optional
-from collections import deque
 
-# Database file path
 DB_FILE = Path("jobs.json")
 
 

@@ -1,9 +1,10 @@
-// Custom hook for upscaler state management
-
-import { useState, useCallback, useEffect, useMemo } from 'react'
-import type { MediaFile, HistoryItem, Resolution, ModelStatus, PreviewImage } from '../types'
+import { useCallback, useEffect, useMemo, useState } from 'react'
 import { API_URL } from '../config'
+import type { HistoryItem, MediaFile, ModelStatus, PreviewImage, Resolution } from '../types'
 import { generateId } from '../utils/helpers'
+
+const POLL_STATUS_MS = 3000
+const POLL_JOB_MS = 1000
 
 interface ServerJob {
   id: string
@@ -15,32 +16,32 @@ interface ServerJob {
   upscale_method?: string
 }
 
+interface ProgressUpdate {
+  status: string
+  progress?: number
+  message?: string
+  output_path?: string
+  upscale_method?: string
+}
+
+function loadHistory(): HistoryItem[] {
+  try {
+    const saved = localStorage.getItem('upscaler_history')
+    return saved ? JSON.parse(saved) : []
+  } catch {
+    return []
+  }
+}
+
 export function useUpscaler() {
-  // File management state
   const [files, setFiles] = useState<MediaFile[]>([])
   const [selectedFileId, setSelectedFileId] = useState<string | null>(null)
-  
-  // Settings state
   const [resolution, setResolution] = useState<Resolution>(1440)
-  
-  // Preview state
   const [previewImages, setPreviewImages] = useState<Record<string, PreviewImage>>({})
   const [loadingPreview, setLoadingPreview] = useState<string | null>(null)
-  
-  // Model status
   const [modelStatus, setModelStatus] = useState<ModelStatus>('offline')
-  
-  // History (lazy initialization)
-  const [history, setHistory] = useState<HistoryItem[]>(() => {
-    try {
-      const saved = localStorage.getItem('upscaler_history')
-      return saved ? JSON.parse(saved) : []
-    } catch {
-      return []
-    }
-  })
+  const [history, setHistory] = useState<HistoryItem[]>(loadHistory)
 
-  // Selected file computed value
   const selectedFile = useMemo(
     () => files.find(f => f.id === selectedFileId),
     [files, selectedFileId]
@@ -63,7 +64,7 @@ export function useUpscaler() {
     }
     
     checkStatus()
-    const interval = setInterval(checkStatus, 3000)
+    const interval = setInterval(checkStatus, POLL_STATUS_MS)
     return () => clearInterval(interval)
   }, [])
 
@@ -81,13 +82,14 @@ export function useUpscaler() {
           const data = await res.json()
           const serverJobs = data.jobs.filter((j: ServerJob) => j.status === 'completed')
           
+          const isVideo = /\.(mp4|avi|mov|mkv|webm)$/i
           const newHistory: HistoryItem[] = serverJobs.map((j: ServerJob) => ({
             id: j.id,
             jobId: j.id,
             name: j.original_filename,
-            fileType: /\.(mp4|avi|mov|mkv|webm)$/i.test(j.original_filename) ? 'video' : 'image',
+            fileType: isVideo.test(j.original_filename) ? 'video' : 'image',
             timestamp: new Date(j.completed_at).getTime(),
-            resolution: j.target_resolution || (j.scale === 4 ? 2160 : 1080),
+            resolution: j.target_resolution ?? (j.scale === 4 ? 2160 : 1080),
             upscaleMethod: j.upscale_method
           }))
 
@@ -191,14 +193,15 @@ export function useUpscaler() {
       setFiles(prev => prev.map(v =>
         v.id === mediaFile.id ? { ...v, jobId: data.job_id } : v
       ))
-      
-      // WebSocket for progress
-      const ws = new WebSocket(`ws://localhost:8000/ws/progress/${data.job_id}`)
-      
-      ws.onmessage = (event) => {
-        const progress = JSON.parse(event.data)
-        
+
+      let isFinished = false
+      let pollingInterval: ReturnType<typeof setInterval> | null = null
+
+      const handleProgress = (progress: ProgressUpdate) => {
+        if (isFinished) return
+
         if (progress.status === 'completed') {
+          isFinished = true
           setHistory(prev => {
             if (prev.some(item => item.jobId === data.job_id)) return prev
             return [{
@@ -211,30 +214,97 @@ export function useUpscaler() {
               upscaleMethod: progress.upscale_method
             }, ...prev]
           })
+
+          if (pollingInterval !== null) {
+            clearInterval(pollingInterval)
+            pollingInterval = null
+          }
         }
 
         setFiles(prev => prev.map(v => {
           if (v.id === mediaFile.id) {
             if (progress.status === 'completed') {
-              return { ...v, status: 'completed' as const, progress: 100, outputPath: progress.output_path, upscaleMethod: progress.upscale_method }
+              return {
+                ...v,
+                status: 'completed' as const,
+                progress: 100,
+                outputPath: progress.output_path,
+                upscaleMethod: progress.upscale_method
+              }
             }
             if (progress.status === 'failed') {
               return { ...v, status: 'error' as const, error: progress.message }
             }
-            return { ...v, progress: progress.progress, message: progress.message }
+            return {
+              ...v,
+              progress: progress.progress ?? v.progress ?? 0,
+              message: progress.message
+            }
           }
           return v
         }))
-        
-        if (progress.status === 'completed' || progress.status === 'failed') {
-          ws.close()
-        }
+      }
+
+      const startPolling = () => {
+        if (isFinished || pollingInterval !== null) return
+
+        pollingInterval = setInterval(async () => {
+          try {
+            const res = await fetch(`${API_URL}/api/jobs/${data.job_id}`)
+            if (!res.ok) return
+            const job = await res.json()
+
+            const progress = {
+              status: job.status,
+              progress: job.progress ?? (job.status === 'completed' ? 100 : 0),
+              message: job.error || '',
+              output_path: job.output_path,
+              upscale_method: job.upscale_method
+            }
+
+            handleProgress(progress)
+
+            if (job.status === 'completed' || job.status === 'failed' || job.status === 'cancelled') {
+              if (pollingInterval !== null) {
+                clearInterval(pollingInterval)
+                pollingInterval = null
+              }
+            }
+          } catch {
+            // ถ้า poll พลาด ให้รอรอบถัดไป
+          }
+        }, POLL_JOB_MS)
       }
       
-      ws.onerror = () => {
-        setFiles(prev => prev.map(v =>
-          v.id === mediaFile.id ? { ...v, status: 'error' as const, error: 'การเชื่อมต่อล้มเหลว' } : v
-        ))
+      // WebSocket for progress - ใช้ถ้าเชื่อมต่อสำเร็จ
+      const wsProtocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:'
+      const wsHost = window.location.host || 'localhost:8000'
+      let ws: WebSocket | null = null
+
+      try {
+        ws = new WebSocket(`${wsProtocol}//${wsHost}/ws/progress/${data.job_id}`)
+
+        ws.onmessage = (event) => {
+          const progress = JSON.parse(event.data)
+          handleProgress(progress)
+
+          if (progress.status === 'completed' || progress.status === 'failed') {
+            ws?.close()
+          }
+        }
+
+        ws.onerror = () => {
+          ws?.close()
+          startPolling()
+        }
+
+        ws.onclose = (evt) => {
+          if (evt.code === 4030 || evt.code === 1006) {
+            startPolling()
+          }
+        }
+      } catch {
+        startPolling()
       }
     } catch {
       setFiles(prev => prev.map(v =>
@@ -273,7 +343,6 @@ export function useUpscaler() {
   }, [])
 
   return {
-    // State
     files,
     selectedFile,
     selectedFileId,
@@ -282,8 +351,6 @@ export function useUpscaler() {
     loadingPreview,
     modelStatus,
     history,
-    
-    // Actions
     setSelectedFileId,
     setResolution,
     addFiles,

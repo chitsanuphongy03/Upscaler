@@ -1,5 +1,3 @@
-// Queue item card component
-
 import type { MediaFile } from '../types'
 import { formatSize, getStatusText, getStatusColor } from '../utils/helpers'
 import { API_URL } from '../config'
@@ -76,8 +74,10 @@ export function QueueItem({ file, isSelected, onSelect, onRemove }: QueueItemPro
 
       {/* Actions */}
       <div className="flex items-center gap-4">
-        <span className={`text-xs font-bold whitespace-nowrap ${getStatusColor(file.status)} ${file.status === 'processing' ? 'animate-pulse' : ''}`}>
-          {file.status === 'processing' && file.message ? file.message : getStatusText(file.status)}
+        <span className={`text-xs font-bold whitespace-nowrap ${file.status === 'processing' ? 'text-white' : getStatusColor(file.status)}`}>
+          {file.status === 'processing'
+            ? `กำลัง Upscale ได้ ${Math.round(file.progress ?? 0)}%`
+            : getStatusText(file.status)}
         </span>
 
         <div className="flex items-center gap-2">

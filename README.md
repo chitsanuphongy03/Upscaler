@@ -29,19 +29,34 @@ A modern, web-based application for upscaling videos and images using AI (Real-E
 
 ## 🚀 Getting Started
 
-### Prerequisites
+### Option 1: Standalone EXE (Recommended)
+
+No installation required! Just download and run.
+
+1. **Download** the latest `.zip` from [Releases](https://github.com/chitsanuphongy03/Upscaler/releases)
+2. **Extract** all files
+3. **Run** `UpscalerAI.exe`
+4. The app will automatically open in your browser
+
+> **Note:** FFmpeg is required. Either install it system-wide or place `ffmpeg.exe` in the same folder as `UpscalerAI.exe`
+
+---
+
+### Option 2: Development Setup
+
+#### Prerequisites
 
 - Node.js (v18+)
 - Python (v3.10+)
 - **FFmpeg** installed and added to system PATH
 - CUDA (Optional, but recommended for faster upscaling with NVIDIA GPUs)
 
-### Installation
+#### Installation
 
 1. **Clone the repository**
 
    ```bash
-   https://github.com/chitsanuphongy03/Upscaler.git
+   git clone https://github.com/chitsanuphongy03/Upscaler.git
    cd Upscaler
    ```
 
@@ -65,7 +80,7 @@ A modern, web-based application for upscaling videos and images using AI (Real-E
    npm install
    ```
 
-### Running the App
+#### Running the App
 
 1. **Start Backend**
 
@@ -83,6 +98,17 @@ A modern, web-based application for upscaling videos and images using AI (Real-E
    ```
 
 3. Open your browser at `http://localhost:5173`
+
+#### Building Standalone EXE
+
+To build the executable yourself:
+
+```bash
+# Windows only
+build_exe.bat
+```
+
+Output: `backend/dist/UpscalerAI/UpscalerAI.exe`
 
 ## 📦 Project Structure
 

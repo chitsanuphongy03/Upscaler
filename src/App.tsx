@@ -1,10 +1,6 @@
-// Video Upscaler - Main Application
-// Refactored to use modular components
-
-import { useState, useEffect } from 'react'
-import type { HistoryItem } from './types'
-
+import { useEffect, useState } from 'react'
 import { useUpscaler } from './hooks/useUpscaler'
+import type { HistoryItem } from './types'
 import { Header } from './components/Header'
 import { Sidebar } from './components/Sidebar'
 import { PreviewArea } from './components/PreviewArea'
@@ -13,15 +9,11 @@ import { LibraryView } from './components/LibraryView'
 import { MediaViewer } from './components/MediaViewer'
 
 function App() {
-  // Tab state with localStorage persistence
-  const [activeTab, setActiveTab] = useState<'workspace' | 'library'>(() => {
-    return (localStorage.getItem('upscaler_active_tab') as 'workspace' | 'library') || 'workspace'
-  })
-  
-  // Media viewer state
+  const [activeTab, setActiveTab] = useState<'workspace' | 'library'>(() =>
+    (localStorage.getItem('upscaler_active_tab') as 'workspace' | 'library') || 'workspace'
+  )
   const [viewingMedia, setViewingMedia] = useState<HistoryItem | null>(null)
 
-  // Upscaler hook - contains all business logic and state
   const {
     files,
     selectedFile,
@@ -39,7 +31,6 @@ function App() {
     setHistory
   } = useUpscaler()
 
-  // Persist active tab
   useEffect(() => {
     localStorage.setItem('upscaler_active_tab', activeTab)
   }, [activeTab])

@@ -1,12 +1,11 @@
-"""
-Video Upscaler - AI-powered upscaling with Real-ESRGAN
-"""
+"""AI-powered image and video upscaling with Real-ESRGAN."""
 
-import os
-import uuid
 import asyncio
-import subprocess
+import io
 import shutil
+import subprocess
+import sys
+import uuid
 from pathlib import Path
 from typing import Callable, Optional, Tuple
 
@@ -30,9 +29,8 @@ class VideoUpscaler:
     def _initialize_model(self) -> None:
         """Initialize Real-ESRGAN model"""
         try:
-            import torch
-            import sys
             import types
+            import torch
             from torchvision.transforms import functional as F
             
             # Patch: Fix BasicSR compatibility with TorchVision > 0.16
@@ -61,11 +59,13 @@ class VideoUpscaler:
                 scale=4
             )
             
+            # tile: ใหญ่ขึ้น = เร็วขึ้นบน GPU (ใช้ VRAM มากขึ้น) 600 เหมาะกับ GPU 6GB+
+            tile_size = 600 if str(self.device).startswith('cuda') else 400
             self.upscaler = RealESRGANer(
                 scale=4,
                 model_path='https://github.com/xinntao/Real-ESRGAN/releases/download/v0.2.2.4/RealESRGAN_x4plus_anime_6B.pth',
                 model=model,
-                tile=400,
+                tile=tile_size,
                 tile_pad=10,
                 pre_pad=0,
                 half=str(self.device).startswith('cuda'),
@@ -98,14 +98,18 @@ class VideoUpscaler:
         if self.use_torch and self.upscaler:
             try:
                 img_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-                
-                # Run in thread to avoid blocking
+
+                def _enhance_silent():
+                    old_stdout = sys.stdout
+                    sys.stdout = io.StringIO()
+                    try:
+                        return self.upscaler.enhance(img_rgb, outscale=scale)
+                    finally:
+                        sys.stdout = old_stdout
+
                 loop = asyncio.get_running_loop()
-                output, _ = await loop.run_in_executor(
-                    None,
-                    lambda: self.upscaler.enhance(img_rgb, outscale=scale)
-                )
-                
+                output, _ = await loop.run_in_executor(None, _enhance_silent)
+
                 result_img = cv2.cvtColor(output, cv2.COLOR_RGB2BGR)
                 method = "Real-ESRGAN"
             except Exception as e:
@@ -162,19 +166,25 @@ class VideoUpscaler:
             if total_frames == 0:
                 raise RuntimeError("No frames extracted")
             
-            print(f"🎬 Processing {total_frames} frames...")
-            
-            for i, frame_file in enumerate(frame_files):
-                if progress_callback:
-                    prog = 20 + int((i / total_frames) * 70)
-                    await progress_callback(prog, f"Upscaling frame {i+1}/{total_frames}...")
-                
-                img = cv2.imread(str(frame_file))
-                if img is None:
-                    continue
-                
-                result, _ = await self.upscale_frame(img, scale)
-                cv2.imwrite(str(upscaled_dir / frame_file.name), result)
+            # ประมวลผลหลายเฟรมพร้อมกัน (จำกัด 2 เฟรม) เพื่อให้เร็วขึ้น
+            MAX_CONCURRENT_FRAMES = 2
+            sem = asyncio.Semaphore(MAX_CONCURRENT_FRAMES)
+            completed = [0]  # ใช้ list เพื่อให้ closure อัปเดตได้
+
+            async def upscale_one(frame_file: Path) -> None:
+                async with sem:
+                    img = cv2.imread(str(frame_file))
+                    if img is None:
+                        return
+                    result, _ = await self.upscale_frame(img, scale)
+                    cv2.imwrite(str(upscaled_dir / frame_file.name), result)
+                    completed[0] += 1
+                    if progress_callback:
+                        prog = 20 + int((completed[0] / total_frames) * 70)
+                        await progress_callback(prog, f"Upscaling frame {completed[0]}/{total_frames}...")
+
+            print(f"🎬 Processing {total_frames} frames (up to {MAX_CONCURRENT_FRAMES} concurrent)...")
+            await asyncio.gather(*[upscale_one(f) for f in frame_files])
             
             # Step 3: Reconstruct video
             if progress_callback:
@@ -248,7 +258,7 @@ class VideoUpscaler:
             str(output_dir / "frame_%06d.png")
         ]
         
-        loop = asyncio.get_event_loop()
+        loop = asyncio.get_running_loop()
         result = await loop.run_in_executor(
             None,
             lambda: subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
@@ -366,13 +376,12 @@ class VideoUpscaler:
         return frame
 
     def _log_error(self, input_path: Path, error: Exception) -> None:
-        """Log error to file"""
+        """Append error to error_log.txt."""
         try:
-            import datetime
             import traceback
-            
+            from datetime import datetime
             with open("error_log.txt", "a", encoding="utf-8") as f:
-                f.write(f"[{datetime.datetime.now()}] Error processing {input_path}: {str(error)}\n")
+                f.write(f"[{datetime.now()}] Error processing {input_path}: {error}\n")
                 f.write(traceback.format_exc())
                 f.write("\n" + "=" * 50 + "\n")
                 

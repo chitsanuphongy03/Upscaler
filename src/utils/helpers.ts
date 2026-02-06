@@ -1,10 +1,5 @@
-// Utility functions for Video Upscaler
-
 import type { MediaFile } from '../types'
 
-/**
- * Format bytes into human-readable size
- */
 export function formatSize(bytes: number): string {
   if (bytes < 1024) return bytes + ' B'
   if (bytes < 1024 * 1024) return (bytes / 1024).toFixed(1) + ' KB'
@@ -27,9 +22,6 @@ export function getStatusText(status: MediaFile['status']): string {
   return statusMap[status]
 }
 
-/**
- * Get CSS color class for file status
- */
 export function getStatusColor(status: MediaFile['status']): string {
   const colorMap: Record<MediaFile['status'], string> = {
     pending: 'text-zinc-500',
@@ -42,9 +34,6 @@ export function getStatusColor(status: MediaFile['status']): string {
   return colorMap[status]
 }
 
-/**
- * Get resolution label
- */
 export function getResolutionLabel(resolution: number): string {
   const labels: Record<number, string> = {
     720: 'HD',
@@ -62,9 +51,6 @@ export function isVideoFile(filename: string): boolean {
   return /\.(mp4|avi|mov|mkv|webm)$/i.test(filename)
 }
 
-/**
- * Generate unique ID
- */
 export function generateId(): string {
   return crypto.randomUUID()
 }

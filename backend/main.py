@@ -3,55 +3,49 @@ Upscaler Backend - FastAPI Server
 AI-powered image and video upscaling with Real-ESRGAN
 """
 
-# =====================
-# Imports
-# =====================
-import os
-import sys
-import uuid
 import asyncio
 import logging
-import time
+import os
+import re
 import shutil
+import sys
+import time
+import uuid
+from contextlib import asynccontextmanager
 from datetime import datetime
 from pathlib import Path
 from typing import Optional
-from contextlib import asynccontextmanager
 
-from fastapi import FastAPI, UploadFile, File, HTTPException
-from fastapi.middleware.cors import CORSMiddleware
-from fastapi.staticfiles import StaticFiles
-from fastapi.responses import FileResponse
-from fastapi.websockets import WebSocket, WebSocketDisconnect
 import aiofiles
+from fastapi import FastAPI, File, HTTPException, UploadFile
+from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import FileResponse
+from fastapi.staticfiles import StaticFiles
+from fastapi.websockets import WebSocket
 
-from queue_manager import JobQueue, Job, JobStatus
+from queue_manager import Job, JobQueue, JobStatus
 from upscaler import VideoUpscaler
 
-# =====================
+# -----------------------------------------------------------------------------
 # Configuration
-# =====================
+# -----------------------------------------------------------------------------
 UPLOAD_DIR = Path("uploads")
 OUTPUT_DIR = Path("outputs")
 TEMP_DIR = Path("temp")
-
-# Supported file extensions
 VIDEO_EXTENSIONS = {".mp4", ".avi", ".mkv", ".mov", ".webm"}
 IMAGE_EXTENSIONS = {".jpg", ".jpeg", ".png", ".webp", ".bmp"}
 ALLOWED_EXTENSIONS = VIDEO_EXTENSIONS | IMAGE_EXTENSIONS
-
-# Valid target resolutions
 VALID_RESOLUTIONS = [720, 1080, 1440, 2160]
+MAX_VIDEO_SIZE = 500 * 1024 * 1024  # 500 MB
+MAX_IMAGE_SIZE = 50 * 1024 * 1024   # 50 MB
 
-# Create directories
-for dir_path in [UPLOAD_DIR, OUTPUT_DIR, TEMP_DIR]:
-    dir_path.mkdir(exist_ok=True)
+for d in (UPLOAD_DIR, OUTPUT_DIR, TEMP_DIR):
+    d.mkdir(exist_ok=True)
 
 
-# =====================
-# Security Utilities
-# =====================
-import re
+# -----------------------------------------------------------------------------
+# Security
+# -----------------------------------------------------------------------------
 
 def sanitize_filename(filename: str) -> str:
     """
@@ -112,35 +106,33 @@ def validate_path(file_path: str, allowed_dirs: list[Path]) -> Path:
 
 
 def is_safe_path(file_path: str, base_dir: Path) -> bool:
-    """Check if a path is safely within the base directory"""
+    """Check if path is within base directory."""
     try:
-        resolved = Path(file_path).resolve()
-        base_resolved = base_dir.resolve()
-        return str(resolved).startswith(str(base_resolved))
+        return str(Path(file_path).resolve()).startswith(str(base_dir.resolve()))
     except Exception:
         return False
 
 
-# =====================
-# Logging Filter
-# =====================
 class EndpointFilter(logging.Filter):
-    """Filter out noisy /api/status endpoint logs"""
+    """Filter out noisy endpoint logs (status, job polling)"""
     def filter(self, record: logging.LogRecord) -> bool:
-        return "GET /api/status" not in record.getMessage()
+        msg = record.getMessage()
+        if "GET /api/status" in msg:
+            return False
+        if "GET /api/jobs/" in msg:
+            return False
+        return True
 
-# =====================
-# Application State
-# =====================
+
+# -----------------------------------------------------------------------------
+# App state
+# -----------------------------------------------------------------------------
 job_queue = JobQueue()
 upscaler: Optional[VideoUpscaler] = None
 active_websockets: dict[str, WebSocket] = {}
 model_status = "offline"
 
 
-# =====================
-# Application Lifecycle
-# =====================
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Initialize and cleanup application resources"""
@@ -170,9 +162,6 @@ async def lifespan(app: FastAPI):
     print("🛑 Shutting down server...")
 
 
-# =====================
-# FastAPI Application
-# =====================
 app = FastAPI(
     title="Upscaler API",
     description="AI-powered image and video upscaling API (Real-ESRGAN)",
@@ -181,22 +170,26 @@ app = FastAPI(
 )
 
 # CORS configuration
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["http://localhost:5173", "http://127.0.0.1:5173"],
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
+# - ในโหมด dev (รันจากโค้ดปกติ) ต้องเปิด CORS เพราะ frontend (Vite) กับ backend คนละพอร์ต
+# - แต่ในโหมด .exe (PyInstaller, sys.frozen=True) frontend ถูกเสิร์ฟจาก backend host เดียวกันอยู่แล้ว
+#   และ CORSMiddleware บางครั้งจะ block WebSocket ด้วย 403 → progress ใช้ไม่ได้
+# เพราะงั้น:
+#   - ถ้าไม่ใช่ .exe → เปิด CORS ปกติ
+#   - ถ้าเป็น .exe → ปิด CORS ไปเลย ปลอดภัยเพราะรันแค่ local app
+if not getattr(sys, "frozen", False):
+    app.add_middleware(
+        CORSMiddleware,
+        allow_origins=["*"],
+        allow_credentials=False,
+        allow_methods=["*"],
+        allow_headers=["*"],
+    )
 
 # Static file serving
 app.mount("/outputs", StaticFiles(directory=OUTPUT_DIR), name="outputs")
 app.mount("/temp", StaticFiles(directory=TEMP_DIR), name="temp")
 
 
-# =====================
-# Background Tasks
-# =====================
 async def cleanup_old_files():
     """Remove files older than 1 hour from uploads and temp directories"""
     while True:
@@ -241,8 +234,24 @@ async def process_jobs():
                     "progress": 0,
                     "message": "Starting..."
                 })
-                
+
+                last_logged_pct = [-1]
+
                 async def on_progress(progress: float, message: str):
+                    # อัปเดตลง job object สำหรับ /api/jobs (ใช้กับ polling)
+                    await job_queue.update_progress(job.id, progress)
+                    job_queue.save_jobs()
+
+                    # Log แค่ % ทุก 10% และตอน 100%
+                    p = int(progress)
+                    if p >= 100:
+                        print("Upscale: 100% เสร็จแล้ว")
+                        last_logged_pct[0] = 100
+                    elif last_logged_pct[0] < 0 or (p // 10) > (last_logged_pct[0] // 10):
+                        print(f"Upscale: {p}%")
+                        last_logged_pct[0] = p
+
+                    # ส่งไปทาง WebSocket (ถ้ามี)
                     await notify_progress(job.id, {
                         "status": "processing",
                         "progress": progress,
@@ -276,6 +285,7 @@ async def process_jobs():
                 job.output_path = str(output_path)
                 job.upscale_method = method
                 job.status = JobStatus.COMPLETED
+                job.progress = 100.0
                 job.completed_at = datetime.now()
                 job_queue.save_jobs()
                 
@@ -311,10 +321,10 @@ async def notify_progress(job_id: str, data: dict):
             pass
 
 
-# =====================
-# API Endpoints
-# =====================
-@app.get("/")
+# -----------------------------------------------------------------------------
+# API
+# -----------------------------------------------------------------------------
+@app.get("/api/health")
 async def root():
     """Health check endpoint"""
     return {
@@ -329,9 +339,12 @@ async def get_model_status():
     return {"status": model_status}
 
 
-# Constants for file limits
-MAX_VIDEO_SIZE = 500 * 1024 * 1024  # 500 MB
-MAX_IMAGE_SIZE = 50 * 1024 * 1024   # 50 MB
+# Fallback for get_video_info when bundled .exe truncates this file
+try:
+    get_video_info  # type: ignore[name-defined]
+except NameError:
+    async def get_video_info(_path: Path) -> dict:  # type: ignore[no-redef]
+        return {}
 
 
 @app.post("/api/upload")
@@ -354,7 +367,7 @@ async def upload_file(file: UploadFile = File(...)):
     limit = MAX_VIDEO_SIZE if file_ext in VIDEO_EXTENSIONS else MAX_IMAGE_SIZE
     
     if content_length and int(content_length) > limit:
-         raise HTTPException(
+        raise HTTPException(
             status_code=413,
             detail=f"File too large. Limit is {limit // (1024*1024)}MB"
         )
@@ -396,7 +409,7 @@ async def upload_file(file: UploadFile = File(...)):
     
     return {
         "file_id": file_id,
-        "filename": safe_filename, # Return sanitized name
+        "filename": safe_filename,
         "path": str(file_path),
         "size": size,
         "file_type": file_type,
@@ -631,7 +644,7 @@ async def get_preview_frame(file_id: str, time_sec: float = 1.0):
                 original_frame = cv2.cvtColor(original_frame, cv2.COLOR_BGRA2BGR)
         
         if original_frame is None:
-             raise ValueError("Could not decode image")
+            raise ValueError("Could not decode image")
 
         # Upscale for preview
         upscaled_frame, method = await upscaler.upscale_frame(original_frame)
@@ -652,32 +665,107 @@ async def get_preview_frame(file_id: str, time_sec: float = 1.0):
         raise HTTPException(status_code=500, detail=f"Preview failed: {str(e)}")
 
 
-# =====================
-# WebSocket
-# =====================
+# -----------------------------------------------------------------------------
+# Serve frontend (SPA)
+# -----------------------------------------------------------------------------
+if getattr(sys, 'frozen', False):
+    # Try multiple common PyInstaller locations
+    base_dir = Path(getattr(sys, "_MEIPASS", Path(sys.executable).parent))
+    exe_dir = Path(sys.executable).parent
+    
+    possible_paths = [
+        base_dir / "dist",
+        exe_dir / "dist",
+        exe_dir / "_internal" / "dist",
+        base_dir / "_internal" / "dist",
+    ]
+    
+    frontend_dist = None
+    for p in possible_paths:
+        if p.exists() and (p / "index.html").exists():
+            frontend_dist = p
+            break
+    
+    if not frontend_dist:
+        print("❌ Could not find frontend 'dist' folder in any of these locations:")
+        for p in possible_paths:
+            print(f"  - {p}")
+        frontend_dist = possible_paths[0] # Fallback for error message
+else:
+    frontend_dist = Path("../dist")
+
+if frontend_dist.exists() and (frontend_dist / "index.html").exists():
+    print(f"🌐 Serving frontend from: {frontend_dist}")
+    # Mount assets
+    app.mount("/assets", StaticFiles(directory=frontend_dist / "assets"), name="assets")
+    
+    # Explicit route for root
+    @app.get("/")
+    async def serve_index():
+        print("🏠 Serving index.html to root request")
+        return FileResponse(frontend_dist / "index.html")
+    
+    # Catch-all route to serve index.html
+    @app.get("/{full_path:path}")
+    async def serve_frontend(full_path: str):
+        if full_path.startswith("api/") or full_path.startswith("ws/"):
+            raise HTTPException(status_code=404, detail="Not found")
+        
+        potential_file = frontend_dist / full_path
+        if potential_file.exists() and potential_file.is_file():
+            print(f"📄 Serving file: {full_path}")
+            return FileResponse(potential_file)
+            
+        print(f"🔍 Route {full_path} not found, falling back to index.html")
+        return FileResponse(frontend_dist / "index.html")
+else:
+    print(f"⚠️ Frontend dist not found or index.html missing at {frontend_dist}")
+
+if __name__ == "__main__":
+    import threading
+    import uvicorn
+    import webbrowser
+
+    if sys.platform == "win32":
+        asyncio.set_event_loop_policy(asyncio.WindowsProactorEventLoopPolicy())
+
+    print("🚀 Starting Upscaler AI...")
+    print("👉 Open your browser at: http://localhost:8000")
+    def _open_browser():
+        time.sleep(2)
+        webbrowser.open("http://localhost:8000")
+    threading.Thread(target=_open_browser, daemon=True).start()
+
+    # Disable reload for production/exe
+    uvicorn.run(app, host="0.0.0.0", port=8000, log_level="info")
+
+
 @app.websocket("/ws/progress/{job_id}")
 async def websocket_progress(websocket: WebSocket, job_id: str):
     """WebSocket for real-time progress updates"""
-    await websocket.accept()
-    active_websockets[job_id] = websocket
-    
+    print(f"🔌 WebSocket connection attempt: {job_id} from {websocket.client}")
     try:
+        await websocket.accept()
+        print(f"✅ WebSocket accepted: {job_id}")
+        active_websockets[job_id] = websocket
+        
+        # Keep connection alive
         while True:
             await websocket.receive_text()
-    except WebSocketDisconnect:
+    except Exception as e:
+        print(f"❌ WebSocket error ({job_id}): {str(e)}")
+    finally:
         if job_id in active_websockets:
             del active_websockets[job_id]
+        print(f"🔌 WebSocket closed: {job_id}")
 
 
-# =====================
-# Utility Functions
-# =====================
 async def get_video_info(file_path: Path) -> dict:
-    """Get video metadata using ffprobe"""
+    """Get video metadata via ffprobe."""
     try:
-        import subprocess
         import json
-        
+        import subprocess
+
         result = subprocess.run([
             "ffprobe", "-v", "quiet",
             "-print_format", "json",
@@ -702,14 +790,4 @@ async def get_video_info(file_path: Path) -> dict:
         return {}
 
 
-# =====================
-# Entry Point
-# =====================
-if __name__ == "__main__":
-    import uvicorn
-    
-    # Fix for Windows asyncio subprocess
-    if sys.platform == 'win32':
-        asyncio.set_event_loop_policy(asyncio.WindowsProactorEventLoopPolicy())
-    
-    uvicorn.run("main:app", host="0.0.0.0", port=8000, reload=True)
+
