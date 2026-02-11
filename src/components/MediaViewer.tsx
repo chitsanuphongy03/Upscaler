@@ -1,5 +1,3 @@
-// Media viewer modal for full-screen view
-
 import type { HistoryItem } from '../types'
 import { API_URL } from '../config'
 

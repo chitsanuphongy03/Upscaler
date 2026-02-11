@@ -99,7 +99,6 @@ class JobQueue:
                     job = Job.from_dict(job_data)
                     self._jobs[job.id] = job
                     
-                    # Handle incomplete jobs from previous sessions
                     if job.status == JobStatus.PROCESSING:
                         job.status = JobStatus.FAILED
                         job.error = "Interrupted by server restart"
@@ -159,14 +158,12 @@ class JobQueue:
             if not job:
                 return False
             
-            # Remove from pending queue
             if job.status == JobStatus.PENDING:
                 try:
                     self._pending_queue.remove(job_id)
                 except ValueError:
                     pass
             
-            # Delete output file
             if job.output_path:
                 try:
                     path = Path(job.output_path)
@@ -176,7 +173,6 @@ class JobQueue:
                 except Exception as e:
                     print(f"Error deleting file {job.output_path}: {e}")
             
-            # Remove from jobs
             del self._jobs[job_id]
             self.save_jobs()
             

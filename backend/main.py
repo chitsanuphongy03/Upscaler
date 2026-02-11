@@ -26,6 +26,18 @@ from fastapi.websockets import WebSocket
 from queue_manager import Job, JobQueue, JobStatus
 from upscaler import VideoUpscaler
 
+
+# -----------------------------------------------------------------------------
+# Logger
+# -----------------------------------------------------------------------------
+def log(tag: str, msg: str, level: str = "info"):
+    """Structured console log with timestamp and category."""
+    from datetime import datetime as _dt
+    ts = _dt.now().strftime("%H:%M:%S")
+    icons = {"info": "│", "ok": "✅", "warn": "⚠️", "err": "❌", "start": "▶", "end": "■"}
+    icon = icons.get(level, "│")
+    print(f"  {icon} [{ts}] [{tag}] {msg}")
+
 # -----------------------------------------------------------------------------
 # Configuration
 # -----------------------------------------------------------------------------
@@ -48,36 +60,23 @@ for d in (UPLOAD_DIR, OUTPUT_DIR, TEMP_DIR):
 # -----------------------------------------------------------------------------
 
 def sanitize_filename(filename: str) -> str:
-    """
-    Sanitize filename to prevent path traversal and remove dangerous characters.
-    Only allows alphanumeric, underscore, hyphen, and dot.
-    """
+    """Sanitize filename to prevent path traversal."""
     if not filename:
         return "unnamed"
     
-    # Get basename to prevent path traversal
     filename = os.path.basename(filename)
-    
-    # Remove null bytes and other dangerous characters
     filename = filename.replace('\x00', '')
-    
-    # Split name and extension
     name, ext = os.path.splitext(filename)
     
-    # Only allow safe characters in filename (alphanumeric, underscore, hyphen, space)
     name = re.sub(r'[^\w\s\-]', '_', name, flags=re.UNICODE)
-    name = re.sub(r'\s+', '_', name)  # Replace spaces with underscore
-    name = name.strip('_')  # Remove leading/trailing underscores
+    name = re.sub(r'\s+', '_', name)
+    name = name.strip('_')
     
-    # Limit length
     if len(name) > 200:
         name = name[:200]
-    
-    # Ensure we have a name
     if not name:
         name = "file"
     
-    # Sanitize extension (only allow known safe extensions)
     ext = ext.lower()
     if ext not in ALLOWED_EXTENSIONS:
         ext = ""
@@ -86,21 +85,13 @@ def sanitize_filename(filename: str) -> str:
 
 
 def validate_path(file_path: str, allowed_dirs: list[Path]) -> Path:
-    """
-    Validate that file path is within allowed directories.
-    Prevents path traversal attacks.
-    """
+    """Validate that file path is within allowed directories."""
     try:
-        # Resolve to absolute path
         resolved = Path(file_path).resolve()
-        
-        # Check if path is within any allowed directory
         for allowed_dir in allowed_dirs:
-            allowed_resolved = allowed_dir.resolve()
-            if str(resolved).startswith(str(allowed_resolved)):
+            if str(resolved).startswith(str(allowed_dir.resolve())):
                 return resolved
-        
-        raise ValueError(f"Path not in allowed directories")
+        raise ValueError("Path not in allowed directories")
     except Exception as e:
         raise ValueError(f"Invalid path: {e}")
 
@@ -131,35 +122,34 @@ job_queue = JobQueue()
 upscaler: Optional[VideoUpscaler] = None
 active_websockets: dict[str, WebSocket] = {}
 model_status = "offline"
+active_files: set[str] = set()
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    """Initialize and cleanup application resources"""
+    """Initialize and cleanup application resources."""
     global upscaler, model_status
     
-    # Filter noisy logs
     logging.getLogger("uvicorn.access").addFilter(EndpointFilter())
     
     model_status = "loading"
-    print("🚀 Loading Real-ESRGAN model...")
+    log("MODEL", "Loading Real-ESRGAN model...", "start")
     
     try:
         loop = asyncio.get_running_loop()
         upscaler = await loop.run_in_executor(None, VideoUpscaler)
         model_status = "ready"
-        print("✅ Model loaded successfully!")
+        log("MODEL", "Model loaded successfully!", "ok")
     except Exception as e:
         model_status = "failed"
-        print(f"❌ Failed to load model: {e}")
+        log("MODEL", f"Failed to load model: {e}", "err")
     
-    # Start background tasks
     asyncio.create_task(process_jobs())
     asyncio.create_task(cleanup_old_files())
     
     yield
     
-    print("🛑 Shutting down server...")
+    log("SERVER", "Shutting down...", "end")
 
 
 app = FastAPI(
@@ -169,13 +159,6 @@ app = FastAPI(
     lifespan=lifespan
 )
 
-# CORS configuration
-# - ในโหมด dev (รันจากโค้ดปกติ) ต้องเปิด CORS เพราะ frontend (Vite) กับ backend คนละพอร์ต
-# - แต่ในโหมด .exe (PyInstaller, sys.frozen=True) frontend ถูกเสิร์ฟจาก backend host เดียวกันอยู่แล้ว
-#   และ CORSMiddleware บางครั้งจะ block WebSocket ด้วย 403 → progress ใช้ไม่ได้
-# เพราะงั้น:
-#   - ถ้าไม่ใช่ .exe → เปิด CORS ปกติ
-#   - ถ้าเป็น .exe → ปิด CORS ไปเลย ปลอดภัยเพราะรันแค่ local app
 if not getattr(sys, "frozen", False):
     app.add_middleware(
         CORSMiddleware,
@@ -185,7 +168,6 @@ if not getattr(sys, "frozen", False):
         allow_headers=["*"],
     )
 
-# Static file serving
 app.mount("/outputs", StaticFiles(directory=OUTPUT_DIR), name="outputs")
 app.mount("/temp", StaticFiles(directory=TEMP_DIR), name="temp")
 
@@ -203,15 +185,17 @@ async def cleanup_old_files():
                     
                 for file_path in directory.iterdir():
                     if file_path.is_file():
+                        if str(file_path.resolve()) in active_files:
+                            continue
                         file_age = now - file_path.stat().st_mtime
                         if file_age > max_age:
                             try:
                                 file_path.unlink()
-                                print(f"🧹 Cleaned up: {file_path}")
+                                log("CLEANUP", f"Deleted: {file_path.name}")
                             except Exception as e:
-                                print(f"❌ Cleanup error ({file_path}): {e}")
+                                log("CLEANUP", f"Error ({file_path.name}): {e}", "err")
         except Exception as e:
-            print(f"❌ Cleanup task error: {e}")
+            log("CLEANUP", f"Task error: {e}", "err")
             
         await asyncio.sleep(900)  # Run every 15 minutes
 
@@ -238,50 +222,53 @@ async def process_jobs():
                 last_logged_pct = [-1]
 
                 async def on_progress(progress: float, message: str):
-                    # อัปเดตลง job object สำหรับ /api/jobs (ใช้กับ polling)
                     await job_queue.update_progress(job.id, progress)
                     job_queue.save_jobs()
 
-                    # Log แค่ % ทุก 10% และตอน 100%
                     p = int(progress)
                     if p >= 100:
-                        print("Upscale: 100% เสร็จแล้ว")
+                        log("UPSCALE", "100% ── Done!", "ok")
                         last_logged_pct[0] = 100
                     elif last_logged_pct[0] < 0 or (p // 10) > (last_logged_pct[0] // 10):
-                        print(f"Upscale: {p}%")
+                        bar = "█" * (p // 10) + "░" * (10 - p // 10)
+                        log("UPSCALE", f"{bar} {p}%")
                         last_logged_pct[0] = p
 
-                    # ส่งไปทาง WebSocket (ถ้ามี)
                     await notify_progress(job.id, {
                         "status": "processing",
                         "progress": progress,
                         "message": message
                     })
                 
-                # Determine file type and process
-                file_ext = Path(job.input_path).suffix.lower()
-                is_video = file_ext in VIDEO_EXTENSIONS
+                input_resolved = str(Path(job.input_path).resolve())
+                active_files.add(input_resolved)
                 
-                if is_video:
-                    output_path, method = await upscaler.upscale_video(
-                        input_path=job.input_path,
-                        output_dir=OUTPUT_DIR,
-                        scale=job.scale,
-                        progress_callback=on_progress
-                    )
-                else:
-                    await notify_progress(job.id, {
-                        "status": "processing",
-                        "progress": 50,
-                        "message": "Upscaling image..."
-                    })
-                    output_path, method = await upscaler.upscale_image_file(
-                        input_path=job.input_path,
-                        output_dir=OUTPUT_DIR,
-                        scale=job.scale
-                    )
+                try:
+                    file_ext = Path(job.input_path).suffix.lower()
+                    is_video = file_ext in VIDEO_EXTENSIONS
+                    
+                    if is_video:
+                        output_path, method = await upscaler.upscale_video(
+                            input_path=job.input_path,
+                            output_dir=OUTPUT_DIR,
+                            scale=job.scale,
+                            progress_callback=on_progress
+                        )
+                    else:
+                        await notify_progress(job.id, {
+                            "status": "processing",
+                            "progress": 50,
+                            "message": "Upscaling image..."
+                        })
+                        output_path, method = await upscaler.upscale_image_file(
+                            input_path=job.input_path,
+                            output_dir=OUTPUT_DIR,
+                            scale=job.scale
+                        )
+                finally:
+                    active_files.discard(input_resolved)
                 
-                # Mark as completed
+
                 job.output_path = str(output_path)
                 job.upscale_method = method
                 job.status = JobStatus.COMPLETED
@@ -321,9 +308,7 @@ async def notify_progress(job_id: str, data: dict):
             pass
 
 
-# -----------------------------------------------------------------------------
-# API
-# -----------------------------------------------------------------------------
+
 @app.get("/api/health")
 async def root():
     """Health check endpoint"""
@@ -339,13 +324,6 @@ async def get_model_status():
     return {"status": model_status}
 
 
-# Fallback for get_video_info when bundled .exe truncates this file
-try:
-    get_video_info  # type: ignore[name-defined]
-except NameError:
-    async def get_video_info(_path: Path) -> dict:  # type: ignore[no-redef]
-        return {}
-
 
 @app.post("/api/upload")
 async def upload_file(file: UploadFile = File(...)):
@@ -358,11 +336,7 @@ async def upload_file(file: UploadFile = File(...)):
             detail=f"Unsupported file type: {file_ext}. Allowed: {', '.join(ALLOWED_EXTENSIONS)}"
         )
     
-    # Sanitize filename
     safe_filename = sanitize_filename(file.filename)
-    
-    # Check file size (approximate using content-length header if available)
-    # Note: This is soft check, we verify real size during read
     content_length = file.headers.get("content-length")
     limit = MAX_VIDEO_SIZE if file_ext in VIDEO_EXTENSIONS else MAX_IMAGE_SIZE
     
@@ -378,7 +352,6 @@ async def upload_file(file: UploadFile = File(...)):
     filename = f"{file_id}{file_ext}" 
     file_path = UPLOAD_DIR / filename
     
-    # Save file and check size
     size = 0
     try:
         async with aiofiles.open(file_path, 'wb') as f:
@@ -391,12 +364,10 @@ async def upload_file(file: UploadFile = File(...)):
                     )
                 await f.write(chunk)
     except Exception as e:
-        # Cleanup partial file
         if file_path.exists():
             file_path.unlink()
         raise e
     
-    # Get media info
     media_info = {}
     if file_type == "video":
         media_info = await get_video_info(file_path)
@@ -430,7 +401,6 @@ async def upscale_image(
         raise HTTPException(status_code=400, detail="Scale must be 2 or 4")
     
     try:
-        # Validate path
         input_path = validate_path(file_path, [UPLOAD_DIR, TEMP_DIR])
         if not input_path.exists():
             raise HTTPException(status_code=404, detail="Image file not found")
@@ -438,7 +408,6 @@ async def upscale_image(
         if not upscaler:
             raise HTTPException(status_code=500, detail="Upscaler not ready")
         
-        # Sanitize original filename for output
         safe_original = sanitize_filename(original_filename)
         safe_original_stem = Path(safe_original).stem
     
@@ -450,7 +419,6 @@ async def upscale_image(
         
         upscaled, method = await upscaler.upscale_frame(img, scale=scale)
         
-        # Format: Upscaled_[Scale]x_[Name].png
         output_filename = f"Upscaled_{scale}x_{safe_original_stem}.png"
         output_path = OUTPUT_DIR / output_filename
         cv2.imwrite(str(output_path), upscaled)
@@ -483,15 +451,12 @@ async def start_upscale(
         )
     
     try:
-        # Validate path prevents path traversal
         valid_path = validate_path(file_path, [UPLOAD_DIR])
         if not valid_path.exists():
             raise HTTPException(status_code=404, detail="File not found")
         
-        # Sanitize filename
         safe_filename = sanitize_filename(original_filename)
 
-        # Calculate scale factor
         input_height = 720
         file_ext = valid_path.suffix.lower()
         
@@ -507,7 +472,7 @@ async def start_upscale(
         
         scale = max(2, min(4, target_resolution // input_height))
         
-        # Create job
+
         job = Job(
             id=str(uuid.uuid4()),
             input_path=str(valid_path),
@@ -567,11 +532,9 @@ async def download_result(job_id: str):
     
     output_path = Path(job.output_path) if job.output_path else None
     
-    # Security check: Ensure output path is within OUTPUT_DIR
     if not output_path or not output_path.exists() or not is_safe_path(str(output_path), OUTPUT_DIR):
         raise HTTPException(status_code=404, detail="Output file not found or invalid path")
     
-    # Determine media type
     ext = output_path.suffix.lower()
     if ext in IMAGE_EXTENSIONS:
         media_type = "image/png"
@@ -580,16 +543,8 @@ async def download_result(job_id: str):
     else:
         media_type = "application/octet-stream"
     
-    # Generate download filename
     original_name = Path(sanitize_filename(job.original_filename)).stem if job.original_filename else "output"
-    
-    # Determine quality suffix
-    if job.target_resolution:
-        quality = f"{job.target_resolution}p"
-    else:
-        quality = f"{job.scale}x"
-        
-    # Format: Upscaled_[Quality]_[Name].[ext]
+    quality = f"{job.target_resolution}p" if job.target_resolution else f"{job.scale}x"
     download_filename = f"Upscaled_{quality}_{original_name}{ext}"
     
     return FileResponse(
@@ -604,8 +559,7 @@ async def get_preview_frame(file_id: str, time_sec: float = 1.0):
     """Generate preview with AI upscaling comparison"""
     global upscaler
     
-    # Find file - Sanitize ID just in case (should be UUID)
-    safe_file_id = sanitize_filename(file_id) # Though file_id is mostly UUID, sanitizing removes path traversal chars
+    safe_file_id = sanitize_filename(file_id)
     
     file_path = None
     for ext in [*VIDEO_EXTENSIONS, *IMAGE_EXTENSIONS]:
@@ -617,7 +571,6 @@ async def get_preview_frame(file_id: str, time_sec: float = 1.0):
     if not file_path:
         raise HTTPException(status_code=404, detail="File not found")
     
-    # Extra safety check
     if not is_safe_path(str(file_path), UPLOAD_DIR):
         raise HTTPException(status_code=403, detail="Invalid file path")
         
@@ -646,10 +599,8 @@ async def get_preview_frame(file_id: str, time_sec: float = 1.0):
         if original_frame is None:
             raise ValueError("Could not decode image")
 
-        # Upscale for preview
         upscaled_frame, method = await upscaler.upscale_frame(original_frame)
         
-        # Save preview files
         orig_path = TEMP_DIR / f"{safe_file_id}_original.jpg"
         upsc_path = TEMP_DIR / f"{safe_file_id}_upscaled.jpg"
         
@@ -665,11 +616,8 @@ async def get_preview_frame(file_id: str, time_sec: float = 1.0):
         raise HTTPException(status_code=500, detail=f"Preview failed: {str(e)}")
 
 
-# -----------------------------------------------------------------------------
-# Serve frontend (SPA)
-# -----------------------------------------------------------------------------
+
 if getattr(sys, 'frozen', False):
-    # Try multiple common PyInstaller locations
     base_dir = Path(getattr(sys, "_MEIPASS", Path(sys.executable).parent))
     exe_dir = Path(sys.executable).parent
     
@@ -687,25 +635,20 @@ if getattr(sys, 'frozen', False):
             break
     
     if not frontend_dist:
-        print("❌ Could not find frontend 'dist' folder in any of these locations:")
+        log("FRONTEND", "Could not find 'dist' folder in any of these:", "err")
         for p in possible_paths:
-            print(f"  - {p}")
-        frontend_dist = possible_paths[0] # Fallback for error message
+            print(f"           - {p}")
+        frontend_dist = possible_paths[0]
 else:
     frontend_dist = Path("../dist")
 
 if frontend_dist.exists() and (frontend_dist / "index.html").exists():
-    print(f"🌐 Serving frontend from: {frontend_dist}")
-    # Mount assets
+    log("FRONTEND", f"Serving from: {frontend_dist}", "ok")
     app.mount("/assets", StaticFiles(directory=frontend_dist / "assets"), name="assets")
-    
-    # Explicit route for root
     @app.get("/")
     async def serve_index():
-        print("🏠 Serving index.html to root request")
         return FileResponse(frontend_dist / "index.html")
     
-    # Catch-all route to serve index.html
     @app.get("/{full_path:path}")
     async def serve_frontend(full_path: str):
         if full_path.startswith("api/") or full_path.startswith("ws/"):
@@ -713,51 +656,29 @@ if frontend_dist.exists() and (frontend_dist / "index.html").exists():
         
         potential_file = frontend_dist / full_path
         if potential_file.exists() and potential_file.is_file():
-            print(f"📄 Serving file: {full_path}")
             return FileResponse(potential_file)
             
-        print(f"🔍 Route {full_path} not found, falling back to index.html")
         return FileResponse(frontend_dist / "index.html")
 else:
-    print(f"⚠️ Frontend dist not found or index.html missing at {frontend_dist}")
-
-if __name__ == "__main__":
-    import threading
-    import uvicorn
-    import webbrowser
-
-    if sys.platform == "win32":
-        asyncio.set_event_loop_policy(asyncio.WindowsProactorEventLoopPolicy())
-
-    print("🚀 Starting Upscaler AI...")
-    print("👉 Open your browser at: http://localhost:8000")
-    def _open_browser():
-        time.sleep(2)
-        webbrowser.open("http://localhost:8000")
-    threading.Thread(target=_open_browser, daemon=True).start()
-
-    # Disable reload for production/exe
-    uvicorn.run(app, host="0.0.0.0", port=8000, log_level="info")
+    log("FRONTEND", f"Dist not found at {frontend_dist}", "warn")
 
 
 @app.websocket("/ws/progress/{job_id}")
 async def websocket_progress(websocket: WebSocket, job_id: str):
     """WebSocket for real-time progress updates"""
-    print(f"🔌 WebSocket connection attempt: {job_id} from {websocket.client}")
+    log("WS", f"Connected: {job_id}")
     try:
         await websocket.accept()
-        print(f"✅ WebSocket accepted: {job_id}")
         active_websockets[job_id] = websocket
         
-        # Keep connection alive
         while True:
             await websocket.receive_text()
     except Exception as e:
-        print(f"❌ WebSocket error ({job_id}): {str(e)}")
+        log("WS", f"Error ({job_id}): {e}", "err")
     finally:
         if job_id in active_websockets:
             del active_websockets[job_id]
-        print(f"🔌 WebSocket closed: {job_id}")
+        log("WS", f"Closed: {job_id}")
 
 
 async def get_video_info(file_path: Path) -> dict:
@@ -790,4 +711,22 @@ async def get_video_info(file_path: Path) -> dict:
         return {}
 
 
+if __name__ == "__main__":
+    import threading
+    import uvicorn
+    import webbrowser
 
+    if sys.platform == "win32":
+        asyncio.set_event_loop_policy(asyncio.WindowsProactorEventLoopPolicy())
+
+    print("\n  ╔══════════════════════════════════════╗")
+    print("  ║        🎬 Upscaler AI v1.0           ║")
+    print("  ╚══════════════════════════════════════╝")
+    log("SERVER", "http://localhost:8000", "start")
+
+    def _open_browser():
+        time.sleep(2)
+        webbrowser.open("http://localhost:8000")
+    threading.Thread(target=_open_browser, daemon=True).start()
+
+    uvicorn.run(app, host="0.0.0.0", port=8000, log_level="info")

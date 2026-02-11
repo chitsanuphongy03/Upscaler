@@ -13,19 +13,22 @@ dist_dir = project_dir / "dist"
 # Helper to collect all package data
 from PyInstaller.utils.hooks import collect_all
 
-# Collect everything from basicsr and realesrgan
+# Collect everything from torch, torchvision, basicsr and realesrgan
+# This ensures CUDA binaries are included for GPU acceleration
+torch_datas, torch_binaries, torch_hidden = collect_all('torch')
+torchvision_datas, torchvision_binaries, torchvision_hidden = collect_all('torchvision')
 basicsr_datas, basicsr_binaries, basicsr_hidden = collect_all('basicsr')
 realesrgan_datas, realesrgan_binaries, realesrgan_hidden = collect_all('realesrgan')
 
 a = Analysis(
     ['main.py'],
     pathex=[],
-    binaries=basicsr_binaries + realesrgan_binaries,
+    binaries=torch_binaries + torchvision_binaries + basicsr_binaries + realesrgan_binaries,
     datas=[
         (str(dist_dir), 'dist'),             # Include Frontend Build to internal 'dist' folder
         ('queue_manager.py', '.'),           # Include Python modules
         ('upscaler.py', '.'),
-    ] + basicsr_datas + realesrgan_datas,    # Add collected datas
+    ] + torch_datas + torchvision_datas + basicsr_datas + realesrgan_datas,    # Add collected datas
     hiddenimports=[
         'uvicorn.logging',
         'uvicorn.loops',
@@ -50,7 +53,7 @@ a = Analysis(
         'numpy.testing',
         'numpy.f2py',
         'numpy.distutils',
-    ] + basicsr_hidden + realesrgan_hidden,  # Add collected hidden imports
+    ] + torch_hidden + torchvision_hidden + basicsr_hidden + realesrgan_hidden,  # Add collected hidden imports
     hookspath=[],
     hooksconfig={},
     runtime_hooks=[],

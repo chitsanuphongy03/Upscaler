@@ -1,5 +1,3 @@
-// History card component
-
 import { useState } from 'react'
 import type { HistoryItem } from '../types'
 import { API_URL } from '../config'

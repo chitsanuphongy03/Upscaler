@@ -1,5 +1,3 @@
-// Upload zone with drag & drop functionality
-
 import { useState, useCallback } from 'react'
 import type { DragEvent, ChangeEvent } from 'react'
 

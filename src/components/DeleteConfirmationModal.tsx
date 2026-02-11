@@ -1,5 +1,3 @@
-// Delete confirmation modal
-
 import type { HistoryItem } from '../types'
 
 interface DeleteConfirmationModalProps {

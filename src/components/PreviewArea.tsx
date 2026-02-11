@@ -1,5 +1,3 @@
-// Preview area component
-
 import type { MediaFile, PreviewImage } from '../types'
 import { ImageComparison } from './ImageComparison'
 

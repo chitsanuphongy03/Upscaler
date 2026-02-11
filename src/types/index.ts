@@ -1,5 +1,3 @@
-// Types for Video Upscaler Application
-
 export interface MediaFile {
   id: string
   file: File

@@ -1,5 +1,3 @@
-// Library view with history grid
-
 import { useState } from 'react'
 import type { HistoryItem } from '../types'
 import { HistoryCard } from './HistoryCard'

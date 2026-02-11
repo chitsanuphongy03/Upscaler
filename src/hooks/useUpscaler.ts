@@ -47,7 +47,6 @@ export function useUpscaler() {
     [files, selectedFileId]
   )
 
-  // Poll model status
   useEffect(() => {
     const checkStatus = async () => {
       try {
@@ -68,12 +67,10 @@ export function useUpscaler() {
     return () => clearInterval(interval)
   }, [])
 
-  // Save history to localStorage
   useEffect(() => {
     localStorage.setItem('upscaler_history', JSON.stringify(history))
   }, [history])
 
-  // Sync history with backend
   useEffect(() => {
     const fetchJobs = async () => {
       try {
@@ -103,7 +100,6 @@ export function useUpscaler() {
     fetchJobs()
   }, [])
 
-  // Generate preview
   const generatePreview = useCallback(async (file: MediaFile) => {
     if (!file.fileId || previewImages[file.id] || loadingPreview === file.id) return
     
@@ -127,14 +123,12 @@ export function useUpscaler() {
     }
   }, [previewImages, loadingPreview])
 
-  // Auto-generate preview when file is selected and ready
   useEffect(() => {
     if (selectedFile && selectedFile.status === 'ready' && selectedFile.fileId && !previewImages[selectedFile.id]) {
       generatePreview(selectedFile)
     }
   }, [selectedFile, generatePreview, previewImages])
 
-  // Upload file to server
   const uploadFile = useCallback(async (mediaFile: MediaFile) => {
     setFiles(prev => prev.map(v =>
       v.id === mediaFile.id ? { ...v, status: 'uploading' as const, progress: 0 } : v
@@ -155,7 +149,6 @@ export function useUpscaler() {
     }
   }, [])
 
-  // Add files to queue
   const addFiles = useCallback((fileList: File[]) => {
     const newFiles: MediaFile[] = fileList.map(file => ({
       id: generateId(),
@@ -173,7 +166,6 @@ export function useUpscaler() {
     newFiles.forEach(mediaFile => uploadFile(mediaFile))
   }, [uploadFile])
 
-  // Start upscaling a file
   const startUpscale = useCallback(async (mediaFile: MediaFile) => {
     if (!mediaFile.serverPath || modelStatus !== 'ready') return
     
@@ -189,7 +181,6 @@ export function useUpscaler() {
       if (!response.ok) throw new Error('Upscale failed')
       const data = await response.json()
       
-      // Store job_id
       setFiles(prev => prev.map(v =>
         v.id === mediaFile.id ? { ...v, jobId: data.job_id } : v
       ))
@@ -271,12 +262,11 @@ export function useUpscaler() {
               }
             }
           } catch {
-            // ถ้า poll พลาด ให้รอรอบถัดไป
+            // retry next interval
           }
         }, POLL_JOB_MS)
       }
       
-      // WebSocket for progress - ใช้ถ้าเชื่อมต่อสำเร็จ
       const wsProtocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:'
       const wsHost = window.location.host || 'localhost:8000'
       let ws: WebSocket | null = null
@@ -313,13 +303,11 @@ export function useUpscaler() {
     }
   }, [modelStatus, resolution])
 
-  // Start all ready files
   const startAll = useCallback(() => {
     if (modelStatus !== 'ready') return
     files.filter(v => v.status === 'ready').forEach(file => startUpscale(file))
   }, [files, modelStatus, startUpscale])
 
-  // Remove file from queue
   const removeFile = useCallback((id: string) => {
     setFiles(prev => prev.filter(v => v.id !== id))
     if (selectedFileId === id) {
@@ -327,7 +315,6 @@ export function useUpscaler() {
     }
   }, [selectedFileId])
 
-  // Delete history item
   const deleteHistoryItem = useCallback(async (item: HistoryItem) => {
     try {
       await fetch(`${API_URL}/api/jobs/${item.jobId}`, { method: 'DELETE' })
@@ -337,7 +324,6 @@ export function useUpscaler() {
     }
   }, [])
 
-  // Clear all history
   const clearHistory = useCallback(() => {
     setHistory([])
   }, [])

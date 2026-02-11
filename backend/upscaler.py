@@ -13,6 +13,13 @@ import cv2
 import numpy as np
 
 
+def _log(tag: str, msg: str, level: str = "info"):
+    from datetime import datetime as _dt
+    ts = _dt.now().strftime("%H:%M:%S")
+    icons = {"info": "│", "ok": "✅", "warn": "⚠️", "err": "❌", "start": "▶", "end": "■"}
+    icon = icons.get(level, "│")
+    print(f"  {icon} [{ts}] [{tag}] {msg}")
+
 class VideoUpscaler:
     """AI-powered video and image upscaler using Real-ESRGAN"""
     
@@ -27,13 +34,13 @@ class VideoUpscaler:
         self._initialize_model()
 
     def _initialize_model(self) -> None:
-        """Initialize Real-ESRGAN model"""
+        """Initialize Real-ESRGAN model."""
         try:
             import types
             import torch
             from torchvision.transforms import functional as F
             
-            # Patch: Fix BasicSR compatibility with TorchVision > 0.16
+            # Patch: BasicSR compatibility with TorchVision > 0.16
             try:
                 import torchvision.transforms.functional_tensor
             except ImportError:
@@ -44,22 +51,16 @@ class VideoUpscaler:
             from basicsr.archs.rrdbnet_arch import RRDBNet
             from realesrgan import RealESRGANer
             
-            print("🚀 Loading Real-ESRGAN model...")
+            _log("MODEL", "Initializing Real-ESRGAN...", "start")
             
             self.device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-            print(f"   Device: {self.device}")
+            _log("MODEL", f"Device: {self.device}")
             
-            # Anime model (faster, good quality)
             model = RRDBNet(
-                num_in_ch=3, 
-                num_out_ch=3, 
-                num_feat=64, 
-                num_block=6, 
-                num_grow_ch=32, 
-                scale=4
+                num_in_ch=3, num_out_ch=3, num_feat=64,
+                num_block=6, num_grow_ch=32, scale=4
             )
             
-            # tile: ใหญ่ขึ้น = เร็วขึ้นบน GPU (ใช้ VRAM มากขึ้น) 600 เหมาะกับ GPU 6GB+
             tile_size = 600 if str(self.device).startswith('cuda') else 400
             self.upscaler = RealESRGANer(
                 scale=4,
@@ -73,28 +74,18 @@ class VideoUpscaler:
             )
             
             self.use_torch = True
-            print("✅ Real-ESRGAN initialized!")
+            _log("MODEL", "Real-ESRGAN ready!", "ok")
             
         except Exception as e:
-            print(f"⚠️ AI Model init failed: {e}")
-            print("   Falling back to OpenCV resize")
+            _log("MODEL", f"AI init failed: {e}", "warn")
+            _log("MODEL", "Falling back to OpenCV resize")
             self.use_torch = False
 
     async def upscale_frame(self, frame: np.ndarray, scale: int = 4) -> Tuple[np.ndarray, str]:
-        """
-        Upscale a single frame
-        
-        Args:
-            frame: Input image as numpy array (BGR format)
-            scale: Upscale factor (2 or 4)
-            
-        Returns:
-            Tuple of (upscaled image, method used)
-        """
+        """Upscale a single frame. Returns (upscaled image, method used)."""
         result_img = None
         method = "OpenCV"
         
-        # Try AI upscaling first
         if self.use_torch and self.upscaler:
             try:
                 img_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
@@ -115,9 +106,8 @@ class VideoUpscaler:
             except Exception as e:
                 print(f"❌ AI upscale error: {e}")
         
-        # Fallback to OpenCV
         if result_img is None:
-            print(f"🔄 Using OpenCV resize ({scale}x)")
+            _log("FRAME", f"OpenCV resize ({scale}x)")
             h, w = frame.shape[:2]
             new_h, new_w = int(h * scale), int(w * scale)
             result_img = cv2.resize(frame, (new_w, new_h), interpolation=cv2.INTER_LANCZOS4)
@@ -132,18 +122,7 @@ class VideoUpscaler:
         scale: int = 2,
         progress_callback: Optional[Callable] = None
     ) -> Tuple[Path, str]:
-        """
-        Upscale entire video
-        
-        Args:
-            input_path: Path to input video
-            output_dir: Directory for output
-            scale: Upscale factor
-            progress_callback: Async callback for progress updates
-            
-        Returns:
-            Tuple of (output path, method used)
-        """
+        """Upscale entire video. Returns (output path, method used)."""
         input_path = Path(input_path)
         job_id = str(uuid.uuid4())
         frames_dir = self.temp_dir / f"frames_{job_id}"
@@ -153,23 +132,20 @@ class VideoUpscaler:
         upscaled_dir.mkdir(exist_ok=True)
         
         try:
-            # Step 1: Extract frames
             if progress_callback:
                 await progress_callback(10, "Extracting frames...")
             
             await self._extract_all_frames(input_path, frames_dir)
             
-            # Step 2: Upscale frames
             frame_files = sorted(list(frames_dir.glob("*.png")))
             total_frames = len(frame_files)
             
             if total_frames == 0:
                 raise RuntimeError("No frames extracted")
             
-            # ประมวลผลหลายเฟรมพร้อมกัน (จำกัด 2 เฟรม) เพื่อให้เร็วขึ้น
             MAX_CONCURRENT_FRAMES = 2
             sem = asyncio.Semaphore(MAX_CONCURRENT_FRAMES)
-            completed = [0]  # ใช้ list เพื่อให้ closure อัปเดตได้
+            completed = [0]
 
             async def upscale_one(frame_file: Path) -> None:
                 async with sem:
@@ -178,15 +154,18 @@ class VideoUpscaler:
                         return
                     result, _ = await self.upscale_frame(img, scale)
                     cv2.imwrite(str(upscaled_dir / frame_file.name), result)
+                    del img, result
                     completed[0] += 1
                     if progress_callback:
                         prog = 20 + int((completed[0] / total_frames) * 70)
                         await progress_callback(prog, f"Upscaling frame {completed[0]}/{total_frames}...")
 
-            print(f"🎬 Processing {total_frames} frames (up to {MAX_CONCURRENT_FRAMES} concurrent)...")
-            await asyncio.gather(*[upscale_one(f) for f in frame_files])
+            BATCH_SIZE = 4
+            _log("VIDEO", f"Processing {total_frames} frames (batches of {BATCH_SIZE}, up to {MAX_CONCURRENT_FRAMES} concurrent)")
+            for i in range(0, len(frame_files), BATCH_SIZE):
+                batch = frame_files[i:i + BATCH_SIZE]
+                await asyncio.gather(*[upscale_one(f) for f in batch])
             
-            # Step 3: Reconstruct video
             if progress_callback:
                 await progress_callback(90, "Reconstructing video...")
             
@@ -197,12 +176,10 @@ class VideoUpscaler:
             return output_path, method
             
         except Exception as e:
-            # Log error
             self._log_error(input_path, e)
             raise
             
         finally:
-            # Cleanup temp directories
             self._cleanup_temp_dirs(frames_dir, upscaled_dir)
 
     async def upscale_image_file(
@@ -211,20 +188,9 @@ class VideoUpscaler:
         output_dir: Path,
         scale: int = 4
     ) -> Tuple[Path, str]:
-        """
-        Upscale image file
-        
-        Args:
-            input_path: Path to input image
-            output_dir: Directory for output
-            scale: Upscale factor
-            
-        Returns:
-            Tuple of (output path, method used)
-        """
+        """Upscale image file. Returns (output path, method used)."""
         input_path = Path(input_path)
         
-        # Read image (handle unicode paths)
         with open(input_path, "rb") as f:
             bytes_data = bytearray(f.read())
         numpyarray = np.asarray(bytes_data, dtype=np.uint8)
@@ -233,16 +199,13 @@ class VideoUpscaler:
         if img is None:
             raise ValueError(f"Could not read image: {input_path}")
         
-        # Handle alpha channel
         if len(img.shape) == 3 and img.shape[2] == 4:
             trans_mask = img[:, :, 3] == 0
             img[trans_mask] = [255, 255, 255, 255]
             img = cv2.cvtColor(img, cv2.COLOR_BGRA2BGR)
             
-        # Upscale
         result, method = await self.upscale_frame(img, scale)
         
-        # Save output
         output_filename = f"upscaled_{scale}x_{input_path.stem}.png"
         output_path = output_dir / output_filename
         cv2.imwrite(str(output_path), result)
@@ -250,8 +213,8 @@ class VideoUpscaler:
         return output_path, method
 
     async def _extract_all_frames(self, video_path: Path, output_dir: Path) -> int:
-        """Extract all frames from video using FFmpeg"""
-        print(f"🎬 Extracting frames from {video_path}")
+        """Extract all frames from video using FFmpeg."""
+        _log("VIDEO", f"Extracting frames from {video_path.name}")
         
         cmd = [
             "ffmpeg", "-i", str(video_path),
@@ -268,7 +231,7 @@ class VideoUpscaler:
             raise RuntimeError(f"FFmpeg failed: {result.stderr}")
         
         count = len(list(output_dir.glob("*.png")))
-        print(f"✅ Extracted {count} frames")
+        _log("VIDEO", f"Extracted {count} frames", "ok")
         
         if count == 0:
             raise RuntimeError("No frames extracted")
@@ -276,10 +239,13 @@ class VideoUpscaler:
         return count
 
     async def _reconstruct_video(self, original_video: Path, frames_dir: Path, output_path: Path) -> None:
-        """Reconstruct video from frames with original audio"""
-        print("🎬 Reconstructing video...")
+        """Reconstruct video from frames with original audio."""
+        _log("VIDEO", "Reconstructing video...", "start")
         
-        # Get original FPS
+        original_video = Path(original_video).resolve()
+        frames_dir = Path(frames_dir).resolve()
+        output_path = Path(output_path).resolve()
+        
         cap = cv2.VideoCapture(str(original_video))
         fps = cap.get(cv2.CAP_PROP_FPS)
         cap.release()
@@ -287,16 +253,20 @@ class VideoUpscaler:
         if not fps or fps <= 0:
             fps = 30
         
-        temp_video = output_path.parent / f"temp_{output_path.name}"
+        temp_video = output_path.parent.resolve() / f"temp_{output_path.name}"
         
-        # Combine frames
         cmd = [
             "ffmpeg", "-y",
             "-framerate", str(fps),
             "-i", str(frames_dir / "frame_%06d.png"),
             "-c:v", "libx264",
             "-pix_fmt", "yuv420p",
+            "-vf", "scale=1920:1080:force_original_aspect_ratio=decrease,pad=1920:1080:(ow-iw)/2:(oh-ih)/2",
+            "-r", str(fps),
             "-crf", "18",
+            "-preset", "medium",
+            "-profile:v", "high",
+            "-level", "4.0",
             str(temp_video)
         ]
         
@@ -316,46 +286,40 @@ class VideoUpscaler:
             "-i", str(original_video),
             "-c:v", "copy",
             "-c:a", "aac",
+            "-b:a", "192k",
             "-map", "0:v:0",
             "-map", "1:a:0?",
+            "-map_metadata", "-1",
             str(output_path)
         ]
         
-        await loop.run_in_executor(
+        result = await loop.run_in_executor(
             None,
-            lambda: subprocess.run(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=True)
+            lambda: subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
         )
         
-        # Cleanup temp video with retries
+        if result.returncode != 0:
+            raise RuntimeError(f"FFmpeg audio merge failed: {result.stderr}")
+        
         for attempt in range(3):
             try:
-                await asyncio.sleep(0.5)  # Wait for file handles to be released
+                await asyncio.sleep(0.5)
                 if temp_video.exists():
                     temp_video.unlink()
-                    print(f"🧹 Cleaned up temp video: {temp_video.name}")
+                    _log("CLEANUP", f"Deleted temp: {temp_video.name}")
                 break
             except Exception as e:
                 if attempt == 2:
-                    print(f"⚠️ Could not delete temp video: {e}")
+                    _log("CLEANUP", f"Could not delete temp: {e}", "warn")
 
     async def extract_frame(self, video_path: str, time_sec: float = 0) -> np.ndarray:
-        """
-        Extract a single frame from video
-        
-        Args:
-            video_path: Path to video file
-            time_sec: Time in seconds to extract frame from
-            
-        Returns:
-            Frame as numpy array (BGR format)
-        """
+        """Extract a single frame from video at given time."""
         video_path = str(video_path)
         
         cap = cv2.VideoCapture(video_path)
         if not cap.isOpened():
             raise ValueError(f"Could not open video: {video_path}")
         
-        # Seek to position
         fps = cap.get(cv2.CAP_PROP_FPS)
         if fps > 0:
             frame_no = int(time_sec * fps)
@@ -364,7 +328,6 @@ class VideoUpscaler:
         ret, frame = cap.read()
         cap.release()
         
-        # Fallback to first frame if seek failed
         if not ret or frame is None:
             cap = cv2.VideoCapture(video_path)
             ret, frame = cap.read()
@@ -385,12 +348,12 @@ class VideoUpscaler:
                 f.write(traceback.format_exc())
                 f.write("\n" + "=" * 50 + "\n")
                 
-            print(f"❌ Error logged: {error}")
+            _log("ERROR", f"Logged: {error}", "err")
         except Exception:
             pass
 
     def _cleanup_temp_dirs(self, *dirs: Path) -> None:
-        """Clean up temporary directories"""
+        """Clean up temporary directories."""
         for dir_path in dirs:
             try:
                 if dir_path.exists():

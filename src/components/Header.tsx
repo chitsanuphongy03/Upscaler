@@ -1,5 +1,3 @@
-// Header component with logo, navigation tabs, and model status
-
 import type { ModelStatus } from '../types'
 
 interface HeaderProps {

@@ -1,6 +1,6 @@
 import { useState, useRef, useEffect } from 'react'
 import type { MouseEvent, TouchEvent } from 'react'
-import '../App.css' // Styles for comparison component
+import '../App.css'
 
 interface ImageComparisonProps {
   originalImage: string

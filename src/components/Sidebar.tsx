@@ -1,5 +1,3 @@
-// Sidebar with upload, resolution selector, and start button
-
 import type { Resolution } from '../types'
 import { UploadZone } from './UploadZone'
 import { ResolutionSelector } from './ResolutionSelector'

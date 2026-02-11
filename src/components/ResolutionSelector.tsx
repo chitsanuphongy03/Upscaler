@@ -1,5 +1,3 @@
-// Resolution selector grid
-
 import type { Resolution } from '../types'
 import { getResolutionLabel } from '../utils/helpers'
 
