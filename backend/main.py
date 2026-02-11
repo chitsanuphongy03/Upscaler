@@ -21,7 +21,7 @@ from fastapi import FastAPI, File, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
-from fastapi.websockets import WebSocket
+from fastapi.websockets import WebSocket, WebSocketDisconnect
 
 from queue_manager import Job, JobQueue, JobStatus
 from upscaler import VideoUpscaler
@@ -673,6 +673,9 @@ async def websocket_progress(websocket: WebSocket, job_id: str):
         
         while True:
             await websocket.receive_text()
+    except WebSocketDisconnect:
+        # Normal disconnect, don't log as error
+        pass
     except Exception as e:
         log("WS", f"Error ({job_id}): {e}", "err")
     finally:
